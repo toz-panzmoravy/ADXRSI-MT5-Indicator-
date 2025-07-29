@@ -1,0 +1,213 @@
+#property indicator_chart_window
+#property indicator_buffers 3
+#property indicator_plots 3
+
+#property indicator_label1 "BUY Signal"
+#property indicator_type1 DRAW_ARROW
+#property indicator_color1 clrLimeGreen
+#property indicator_width1 3
+
+#property indicator_label2 "SELL Signal"
+#property indicator_type2 DRAW_ARROW
+#property indicator_color2 clrRed
+#property indicator_width2 3
+
+#property indicator_label3 "Test Signal"
+#property indicator_type3 DRAW_ARROW
+#property indicator_color3 clrYellow
+#property indicator_width3 2
+
+#property strict
+
+// Uživatelské vstupy
+input int adxPeriod = 7;
+input int rsiPeriod = 14;
+input int bbPeriod = 20;
+input double bbDeviation = 2.0;
+
+// Parametry pro signály
+input int adxMinLevel = 25;        // Minimální ADX úroveň (zvýšeno pro silnější trendy)
+input int rsiBuyMin = 40;          // Minimální RSI pro BUY
+input int rsiBuyMax = 70;          // Maximální RSI pro BUY
+input int rsiSellMin = 30;         // Minimální RSI pro SELL
+input int rsiSellMax = 60;         // Maximální RSI pro SELL
+input bool showTestSignals = false; // Zobrazit testovací signály
+
+// Handle indikátorů
+int adxHandle, rsiHandle, bbHandle;
+
+// Buffery pro signály
+double buyBuffer[];
+double sellBuffer[];
+double testBuffer[];
+
+// Buffery pro hodnoty
+double adxMain[], plusDI[], minusDI[];
+double rsiBuffer[], bbMiddle[];
+
+// Funkce pro kontrolu validních dat
+bool IsValidValue(double value)
+{
+   return value != 0.0 && value != EMPTY_VALUE && value > -999999 && value < 999999;
+}
+
+// Inicializace indikátorů
+int OnInit()
+{
+   // Nastavení bufferů
+   SetIndexBuffer(0, buyBuffer, INDICATOR_DATA);
+   SetIndexBuffer(1, sellBuffer, INDICATOR_DATA);
+   SetIndexBuffer(2, testBuffer, INDICATOR_DATA);
+   
+   // Nastavení šipek
+   PlotIndexSetInteger(0, PLOT_ARROW, 233); // šipka nahoru pro BUY
+   PlotIndexSetInteger(1, PLOT_ARROW, 234); // šipka dolů pro SELL
+   PlotIndexSetInteger(2, PLOT_ARROW, 108); // křížek pro TEST
+   
+   // Nastavení offsetu
+   PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, 0.0);
+   PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, 0.0);
+   PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, 0.0);
+
+   adxHandle = iADX(_Symbol, _Period, adxPeriod);
+   rsiHandle = iRSI(_Symbol, _Period, rsiPeriod, PRICE_CLOSE);
+   bbHandle = iBands(_Symbol, _Period, bbPeriod, bbDeviation, 0, PRICE_CLOSE);
+
+   if (adxHandle == INVALID_HANDLE || rsiHandle == INVALID_HANDLE || bbHandle == INVALID_HANDLE)
+   {
+      Print("❌ Chyba při vytváření indikátorových handle.");
+      return INIT_FAILED;
+   }
+
+   Print("✅ ADX RSI Signal Indikátor úspěšně inicializován");
+   Print("📊 Parametry: ADX>", adxMinLevel, " RSI BUY:", rsiBuyMin, "-", rsiBuyMax, " RSI SELL:", rsiSellMin, "-", rsiSellMax);
+   return INIT_SUCCEEDED;
+}
+
+// Vyčištění handle
+void OnDeinit(const int reason)
+{
+   IndicatorRelease(adxHandle);
+   IndicatorRelease(rsiHandle);
+   IndicatorRelease(bbHandle);
+   Print("🧹 Indikátor vyčištěn");
+}
+
+// Výpočet
+int OnCalculate(const int rates_total,
+                const int prev_calculated,
+                const datetime &time[],
+                const double &open[],
+                const double &high[],
+                const double &low[],
+                const double &close[],
+                const long &tick_volume[],
+                const long &volume[],
+                const int &spread[])
+{
+   if (rates_total < 5) return 0;
+
+   int copied = rates_total;
+
+   // Kopírování dat z indikátorů
+   if (CopyBuffer(adxHandle, 0, 0, copied, adxMain) <= 0) 
+   {
+      Print("❌ Chyba při kopírování ADX dat");
+      return 0;
+   }
+   if (CopyBuffer(adxHandle, 1, 0, copied, plusDI) <= 0) 
+   {
+      Print("❌ Chyba při kopírování +DI dat");
+      return 0;
+   }
+   if (CopyBuffer(adxHandle, 2, 0, copied, minusDI) <= 0) 
+   {
+      Print("❌ Chyba při kopírování -DI dat");
+      return 0;
+   }
+   if (CopyBuffer(rsiHandle, 0, 0, copied, rsiBuffer) <= 0) 
+   {
+      Print("❌ Chyba při kopírování RSI dat");
+      return 0;
+   }
+   if (CopyBuffer(bbHandle, 1, 0, copied, bbMiddle) <= 0) 
+   {
+      Print("❌ Chyba při kopírování BB dat");
+      return 0;
+   }
+
+   // Debug výpisy každých 50 ticků
+   if (rates_total % 50 == 0)
+   {
+      Print("=== DEBUG INFO ===");
+      Print("Rates total: ", rates_total);
+      Print("ADX: ", adxMain[1], " +DI: ", plusDI[1], " -DI: ", minusDI[1]);
+      Print("RSI: ", rsiBuffer[1], " BB: ", bbMiddle[1], " Close: ", close[1]);
+   }
+
+   // Zpracování všech svíček
+   for(int i = 1; i < rates_total && i < copied; i++)
+   {
+      // Kontrola validních dat
+      if (!IsValidValue(adxMain[i]) || !IsValidValue(plusDI[i]) || !IsValidValue(minusDI[i]) ||
+          !IsValidValue(rsiBuffer[i]) || !IsValidValue(bbMiddle[i]) || !IsValidValue(close[i]))
+      {
+         buyBuffer[i] = 0.0;
+         sellBuffer[i] = 0.0;
+         testBuffer[i] = 0.0;
+         continue;
+      }
+
+      // Testovací signál - každých 100 svíček (pouze pokud je povoleno)
+      if (showTestSignals && i % 100 == 0)
+      {
+         testBuffer[i] = low[i] - 20 * _Point;
+         Print("🧪 Test signál na pozici ", i);
+      }
+      else
+      {
+         testBuffer[i] = 0.0;
+      }
+
+      // Optimalizované podmínky pro BUY signál
+      bool isBuy = (
+         adxMain[i] > adxMinLevel &&                    // ADX nad minimální úrovní
+         plusDI[i] > minusDI[i] &&                      // +DI > -DI (bullish momentum)
+         plusDI[i] > 20 &&                              // +DI musí být nad 20
+         rsiBuffer[i] > rsiBuyMin && rsiBuffer[i] < rsiBuyMax &&  // RSI v optimálním rozsahu
+         close[i] > bbMiddle[i] &&                      // Cena nad střední Bollinger Band
+         close[i] > open[i]                             // Svíčka je zelená (bullish)
+      );
+
+      // Optimalizované podmínky pro SELL signál
+      bool isSell = (
+         adxMain[i] > adxMinLevel &&                    // ADX nad minimální úrovní
+         minusDI[i] > plusDI[i] &&                      // -DI > +DI (bearish momentum)
+         minusDI[i] > 20 &&                             // -DI musí být nad 20
+         rsiBuffer[i] > rsiSellMin && rsiBuffer[i] < rsiSellMax &&  // RSI v optimálním rozsahu
+         close[i] < bbMiddle[i] &&                      // Cena pod střední Bollinger Band
+         close[i] < open[i]                             // Svíčka je červená (bearish)
+      );
+
+      // Priorita: BUY má přednost před SELL
+      if (isBuy)
+      {
+         buyBuffer[i] = low[i] - 15 * _Point;
+         sellBuffer[i] = 0.0;
+         Print("🟢 BUY SIGNAL na pozici ", i, " čas: ", TimeToString(time[i]), " ADX:", adxMain[i], " RSI:", rsiBuffer[i], " +DI:", plusDI[i]);
+      }
+      else if (isSell)
+      {
+         sellBuffer[i] = high[i] + 15 * _Point;
+         buyBuffer[i] = 0.0;
+         Print("🔴 SELL SIGNAL na pozici ", i, " čas: ", TimeToString(time[i]), " ADX:", adxMain[i], " RSI:", rsiBuffer[i], " -DI:", minusDI[i]);
+      }
+      else
+      {
+         buyBuffer[i] = 0.0;
+         sellBuffer[i] = 0.0;
+      }
+   }
+
+   return rates_total;
+}
